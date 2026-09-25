@@ -129,11 +129,12 @@ export function setupRouter(app: Hono) {
   // 安全响应头：防止点击劫持 / MIME 嗅探 / XSS / 引用泄露
   app.use("*", async (c, next) => {
     await next()
+    const isSsoCallback = c.req.path.endsWith("/auth/sso_callback")
     c.res.headers.set("X-Frame-Options", "DENY")
     c.res.headers.set("X-Content-Type-Options", "nosniff")
     c.res.headers.set(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'",
+      "default-src 'self'; script-src 'self'${isSsoCallback ? " 'unsafe-inline'" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'",
     )
     c.res.headers.set(
       "Strict-Transport-Security",
