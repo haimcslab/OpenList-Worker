@@ -134,7 +134,7 @@ export function setupRouter(app: Hono) {
     c.res.headers.set("X-Content-Type-Options", "nosniff")
     c.res.headers.set(
       "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'${isSsoCallback ? " 'unsafe-inline'" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'",
+      `default-src 'self'; script-src 'self'${isSsoCallback ? " 'unsafe-inline'" : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'`,
     )
     c.res.headers.set(
       "Strict-Transport-Security",
