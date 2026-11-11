@@ -77,7 +77,7 @@ const SAFE_REDIRECT_HEADER_KEYS = new Set([
   "referer",
 ])
 
-async function safeProxyFetch(
+export async function safeProxyFetch(
   url: string,
   headers: Record<string, string>,
   allowHosts?: ReadonlySet<string> | string[],
@@ -280,10 +280,15 @@ async function proxyUpstream(
     "Content-Range, Accept-Ranges, Content-Length, Content-Disposition",
   )
 
-  // Content-Type: prefer upstream, fallback by extension
+  // Content-Type：上游给的是通用 octet-stream（139/OSS 等常见）时按扩展名
+  // 覆盖，否则 PDF 在浏览器里不会被当成文档、视频也拿不到 video/*。
+  const upstreamType = upstreamRes.headers.get("content-type") || ""
+  const fallbackType = contentTypeForPath(reqPath)
   c.header(
     "Content-Type",
-    upstreamRes.headers.get("content-type") || contentTypeForPath(reqPath),
+    !upstreamType || /^application\/octet-stream/i.test(upstreamType)
+      ? fallbackType
+      : upstreamType,
   )
 
   // Forward range/length headers
@@ -305,9 +310,16 @@ async function proxyUpstream(
   // 清洗 CR/LF 与控制字符，防止恶意上游注入额外响应头（Set-Cookie/Location）。
   const contentDisposition = upstreamRes.headers.get("content-disposition")
   if (contentDisposition) {
+    // 媒体库（scope=media）用于在线播放/阅读：上游通常给 attachment，
+    // 会把 PDF 变成下载、把视频变成附件，这里改为 inline。
+    const inlineForMedia = (c.req.query("scope") || "") === "media"
     c.header(
       "Content-Disposition",
-      sanitizeContentDisposition(contentDisposition),
+      sanitizeContentDisposition(
+        inlineForMedia
+          ? contentDisposition.replace(/^\s*attachment/i, "inline")
+          : contentDisposition,
+      ),
     )
   }
 
@@ -444,7 +456,7 @@ rawRouter.get("/*", async (c) => {
       }
     }
 
-    const resolved = await resolvePath(reqPath)
+    const resolved = await resolvePath(reqPath, c.env)
 
     if (resolved.isVirtual || !resolved.physical) {
       return c.text("Cannot download virtual directory path", 400)
@@ -473,8 +485,20 @@ rawRouter.get("/*", async (c) => {
       // /p 是公开代理端点，对齐 Go handles.Proxy() 的 canProxy() 检查：
       // 未开启代理、且扩展名也不在 proxy_types / text_types 里 → 403 proxy not allowed。
       // （Go 只对 /p 与归档 /ap 做此限制，/d、/sd 不做，故这里仅判 /p 端点。）
+      // 媒体库签发的 /p（scope=media）：签名本身覆盖了 scope，等价于
+      // 「该用户已获授权读取这个文件」，因此不再受存储 web_proxy 限制。
+      // 不满足时仍按原策略判定（公开 /p 端点防滥用）。
+      const mediaScoped =
+        (c.req.query("scope") || "") === "media" &&
+        (await verifyDownloadSign(
+          c,
+          reqPath,
+          c.req.query("sign") || "",
+          "media",
+        ))
       if (
         isProxyEndpoint &&
+        !mediaScoped &&
         !canUseProxyEndpoint({
           storage: resolved.storage,
           driver: normDriver,
@@ -496,11 +520,12 @@ rawRouter.get("/*", async (c) => {
           // 管理员配置的受信存储 endpoint host（可能是内网自建 S3/WebDAV/MinIO），
           // 加上全局环境变量 SSRF_ALLOWED_HOSTS，合并为 SSRF 白名单，避免被误拦截。
           const trustedHosts = getTrustedHosts(resolved.storage.addition, c.env)
-          const driver = await getDriver(
+          // 每次请求都向驱动换取直链：不做任何跨请求缓存，保证链接与文件状态实时。
+          const driver: any = await getDriver(
             resolved.storage.driver,
             resolved.storage,
           )
-          let fileItem
+          let fileItem: any
           try {
             fileItem = await driver.get(reqPath, resolved.physical)
           } finally {
@@ -579,7 +604,8 @@ rawRouter.get("/*", async (c) => {
             )
             return c.redirect(fileItem.raw_url, 302)
           } else if (
-            typeof (driver as any).createReadStream === "function" &&
+            driver &&
+            typeof driver.createReadStream === "function" &&
             fileItem &&
             !fileItem.is_dir
           ) {

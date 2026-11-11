@@ -6,10 +6,10 @@
   <p>Runs on Cloudflare Workers / EdgeOne Cloud Function / Alibaba Cloud ESA</p>
 
 <a href="https://github.com/OpenListTeam/OpenList-Worker/blob/main/LICENSE"><img src="https://img.shields.io/github/license/OpenListTeam/OpenList-Worker" alt="License" /></a>
-<a href="https://github.com/OpenListTeam/OpenList-Worker/actions/workflows/edgeone-artifact-guard.yml"><img src="https://img.shields.io/github/actions/workflow/status/OpenListTeam/OpenList-Worker/edgeone-artifact-guard.yml?branch=main" alt="Build status" /></a>
-<a href="https://github.com/OpenListTeam/OpenList-Worker/releases"><img src="https://img.shields.io/github/release/OpenListTeam/OpenList-Worker" alt="latest version" /></a>
+<a href="https://github.com/OpenListTeam/OpenList-Worker/actions/workflows/build-verify.yml"><img src="https://img.shields.io/github/actions/workflow/status/OpenListTeam/OpenList-Worker/build-verify.yml?branch=main" alt="Build status" /></a>
 <a href="https://github.com/OpenListTeam/OpenList-Worker/discussions"><img src="https://img.shields.io/github/discussions/OpenListTeam/OpenList-Worker?color=%23ED8936" alt="discussions" /></a>
-<a href="https://github.com/OpenListTeam/OpenList-Worker/releases"><img src="https://img.shields.io/github/downloads/OpenListTeam/OpenList-Worker/total?color=%239F7AEA&logo=github" alt="Downloads" /></a>
+<a href="https://github.com/OpenListTeam/OpenList-Worker/stargazers"><img src="https://img.shields.io/github/stars/OpenListTeam/OpenList-Worker?color=%23ED8936&logo=github" alt="Stars" /></a>
+<a href="https://github.com/OpenListTeam/OpenList-Worker/forks"><img src="https://img.shields.io/github/forks/OpenListTeam/OpenList-Worker?color=%239F7AEA&logo=github" alt="Forks" /></a>
 
 📘 [Docs](https://doc.oplist.org) · 🌏 [Docs (China mainland)](https://doc.oplist.org.cn)  · ⚖️ [Terms of use](https://doc.oplist.org/terms)  · 🔒 [Privacy policy](https://doc.oplist.org/privacy)
 
@@ -31,18 +31,18 @@ Click the button below to deploy this project to the corresponding platform with
 <div align="center">
 
 
-| EdgeOne Makers · International | EdgeOne Makers · China | Cloudflare Workers · Global |
-| :---: | :---: | :---: |
-| [![Deploy to EdgeOne](https://cdnstatic.tencentcs.com/edgeone/pages/deploy.svg)](https://edgeone.ai/pages/new?project-name=openlist-tsworker&repository-url=https://github.com/OpenListTeam/OpenList-Worker&install-command=pnpm%20install%20--no-frozen-lockfile&build-command=pnpm%20run%20build&output-directory=dist&env=JWT_SECRET) | [![Deploy to EdgeOne](https://cdnstatic.tencentcs.com/edgeone/pages/deploy.svg)](https://console.cloud.tencent.com/edgeone/pages/new?project-name=openlist-tsworker&repository-url=https://github.com/OpenListTeam/OpenList-Worker&install-command=pnpm%20install%20--no-frozen-lockfile&build-command=pnpm%20run%20build&output-directory=dist&env=JWT_SECRET) | [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/OpenListTeam/OpenList-Worker) |
+| EdgeOne Makers · International | EdgeOne Makers · China | Cloudflare Workers · Global | Alibaba Cloud ESA · China |
+| :---: | :---: | :---: | :---: |
+| [![Deploy to EdgeOne](https://cdnstatic.tencentcs.com/edgeone/pages/deploy.svg)](https://edgeone.ai/pages/new?project-name=openlist-tsworker&repository-url=https://github.com/OpenListTeam/OpenList-Worker&install-command=pnpm%20install%20--no-frozen-lockfile&build-command=pnpm%20run%20build&output-directory=dist&env=JWT_SECRET) | [![Deploy to EdgeOne](https://cdnstatic.tencentcs.com/edgeone/pages/deploy.svg)](https://console.cloud.tencent.com/edgeone/pages/new?project-name=openlist-tsworker&repository-url=https://github.com/OpenListTeam/OpenList-Worker&install-command=pnpm%20install%20--no-frozen-lockfile&build-command=pnpm%20run%20build&output-directory=dist&env=JWT_SECRET) | [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/OpenListTeam/OpenList-Worker) | [![Deploy to Alibaba Cloud ESA](readmes/assets/esa-deploy.svg)](https://esa.console.aliyun.com/edge/function/list) |
 
 </div>
 
 > [!IMPORTANT]
 > - If Cloudflare prompts `cannot fetch repository content`, [Fork](https://github.com/OpenListTeam/OpenList-Worker/fork) this project first, then deploy by connecting to the GitHub repository
-> - After deployment, configure environment variables: **EdgeOne**: [International console](https://console.edgeone.ai/makers) · [China console](https://console.cloud.tencent.com/edgeone/makers); **Cloudflare**: [Worker dashboard](https://dash.cloudflare.com/). Environment variables:
->   - `DB_FORMAT`: data storage format: `map` (default, whole object JSON) / `key` (per-key storage) / `sql` (relational tables, compatible with Go backend)
->   - `DB_DRIVER`: database driver: `auto` (default, auto-detect) / `blob` (EdgeOne Blob) / `cfkv` (CF KV API) / `kv` (KV binding) / `d1` (Cloudflare D1) / `mysql`
->   - For other optional variables, see the **detailed deployment guide**: [Cloudflare](https://doc.oplist.org/guide/installation/worker#deploy-to-cloudflare-workers) · [EdgeOne](https://doc.oplist.org/guide/installation/worker#deploy-to-edgeone) · [ESA](https://doc.oplist.org/guide/installation/worker#deploy-to-alibaba-cloud-esa)
+> - For Alibaba Cloud ESA, import this repository from **Edge Computing and AI → Functions and Pages** in the console
+> - Set `JWT_SECRET` during deployment (≥16 random chars) for JWT signing and encryption
+> - Storage automatically uses the platform's built-in persistent backend (`DB_DRIVER=auto`) — no configuration needed; for other variables see [Environment Variables](https://doc.oplist.org/ecosystem/official_worker/guide_env)
+> - After deployment, the first visit opens the **install wizard**: set the admin account and password in the browser to finish initialization; set `ADMIN_PASS` to skip the wizard
 
 
 ## Features
@@ -57,7 +57,7 @@ Built-in **78 storage drivers**, ready to mount various storage backends out of 
 
 - **Domestic cloud drives**: Aliyundrive (Open/Share), Quark (Open/UC TV), Baidu Netdisk (Album), 115 (Open/Share), 123 Pan (Open/Share), Tianyi Cloud (189/PC/TV), China Mobile Cloud (139/Hecaiyun), Wopan, Thunder, Tencent Weiyun, Lanzou, PikPak (Share), Doubao, Guangyapan, Chaoxing Group, Lenovo NAS Share, Teambition, WPS Cloud, Alibaba Docs, HalalCloud, MediaTrack, etc.
 - **International cloud drives**: Google Drive (Album), OneDrive (App/ShareLink), Dropbox, MEGA, MediaFire, Proton Drive, Yandex Disk, Degoo, Bunny Storage, TeraBox, etc.
-- **Object storage**: S3-compatible (AWS/OSS/COS/MinIO, etc.), UpYun USS, Azure Blob, WebDAV, FTP, SFTP, SMB, IPFS, etc.
+- **Object storage**: S3-compatible (AWS/OSS/COS/MinIO, etc.), Cloudflare R2 (Workers binding or S3 API), UpYun USS, Azure Blob, WebDAV, FTP, SFTP, SMB, IPFS, etc.
 - **Code hosting**: GitHub, GitHub Releases, CNB Releases
 - **Cloud drive programs**: OpenList (Share), AList V3, Cloudreve V3/V4, Kodbox, Seafile, Teldrive, Febbox, etc.
 - **Other drivers**: Netease Music, Misskey, Emby, Cloudflare Image Hosting, etc.
@@ -66,31 +66,23 @@ In addition to the real storages above, virtual/functional drivers such as `Loca
 
 ### Core Capabilities
 
-- **File browsing**: unified directory tree browsing, with online preview of images, videos, audio, documents, code, archives and more.
-- **Upload & download**: cross-storage upload, batch download, streaming and direct-link redirect.
-- **File sharing**: generate share links with expiry, password and permission control, supporting anonymous access and directory sharing.
-- **Full-text search**: quickly search files in indexed storages.
-- **Offline tasks**: background task queue supporting batch operations and async processing.
-- **External interfaces**: expose aggregated storage via WebDAV or S3-compatible protocol for mounting into third-party tools.
-- **MCP service**: provide a Model Context Protocol endpoint that can be integrated and called by AI assistants and other clients.
-
-### Access Control
-
-- **Permissions**: role-based access control (RBAC), supporting user groups, directory-level read/write permissions and quotas.
-- **Authentication**: built-in account passwords with TOTP verification, WebAuthn/FIDO login, SSO single sign-on and LDAP directory authentication.
-- **Security hardening**: JWT sessions, CSRF protection, clickjacking protection (X-Frame-Options), Content Security Policy (CSP).
-- **Health checks**: provide `/health` liveness probe and `/healthz` readiness probe for monitoring and alerting.
-
-### Platform Deployment
-
-- **Runtime platforms**: Cloudflare Workers, Tencent Cloud EdgeOne Makers, Vercel, Serverless and Node.js container environments.
-- **Data storage**: Cloudflare D1 (SQLite) as primary, also supporting MySQL, MariaDB, PostgreSQL, SQL Server.
-- **Persistent cache**: Cloudflare KV / EdgeOne Blob (optional) for config persistence and caching.
-- **One-click deploy**: support one-click deploy buttons + initialization on EdgeOne, Cloudflare Workers and other platforms.
+- **File management**: unified directory tree browsing with online preview for images, videos, audio, documents, code and archives; cross-storage upload, batch download, streaming and direct-link redirect; share links with expiry, password and permission control.
+- **Search & tasks**: full-text search across indexed storages; background task queue for batch and async processing.
+- **External interfaces**: WebDAV, S3-compatible protocol, and an MCP endpoint for AI assistants.
+- **Guest access**: fresh installs require sign-in by default (the `guest` account is disabled). To allow anonymous read-only browsing, enable the `guest` user; existing deployments keep their current behavior. Anonymous access is controlled solely by the guest account state (same as the Go backend) — there is no extra site setting, and it is not a Cloudflare environment variable.
+- **Access & auth**: RBAC (user groups, directory-level read/write permissions, quotas), account passwords plus TOTP / WebAuthn / SSO / LDAP.
+- **Security & ops**: JWT sessions, CSRF, clickjacking (X-Frame-Options) and CSP protection, `/health` and `/healthz` probes.
+- **Concurrency deduplication**: identical directory listing / metadata requests hit the upstream drive only once; the rest reuse the result, reducing rate limits and CPU usage.
+- **Runtime platforms**: Cloudflare Workers, Tencent Cloud EdgeOne Makers, Alibaba Cloud ESA, Vercel / AWS Lambda and Node.js containers.
+- **Data storage**: Cloudflare D1 (SQLite) as primary, plus KV / Blob / Durable Objects and external MySQL / MariaDB.
+- **One-click deploy**: EdgeOne, Cloudflare Workers and Alibaba Cloud ESA deploy buttons + install wizard.
 
 ---
 
 ## Manual Deployment
+
+<details>
+<summary>Expand prerequisites, local development and production deployment</summary>
 
 ### Prerequisites
 
@@ -103,7 +95,7 @@ In addition to the real storages above, virtual/functional drivers such as `Loca
 # 1. Install dependencies
 pnpm install
 
-# 2. Configure wrangler.toml (fill in JWT_SECRET, KV/D1 bindings)
+# 2. Configure bindings and variables in wrangler.jsonc as needed (see .dev.vars.example for JWT_SECRET)
 
 # 3. Start the dev server (auto-fetches the official frontend and runs the Worker)
 pnpm run dev:unified
@@ -115,12 +107,14 @@ pnpm run dev:worker
 ### Production Deployment
 
 ```bash
-# One-click deploy: ensure the KV namespace exists → fetch the official frontend → deploy to Cloudflare Workers
+# One-click deploy: build the frontend → deploy to Cloudflare Workers (KV bindings are provisioned automatically by wrangler)
 pnpm run deploy
 
-# Or deploy the Worker directly (skip KV check and frontend build)
+# Or deploy the Worker directly (skip the frontend build)
 pnpm run deploy:worker
 ```
+
+</details>
 
 ---
 
@@ -128,100 +122,33 @@ pnpm run deploy:worker
 
 ### Backend
 
-- **Runtime**: Cloudflare Workers (Edge Computing)
+- **Runtime**: Cloudflare Workers / EdgeOne Functions / Alibaba Cloud ESA (Edge Computing)
 - **Web framework**: Hono.js
-- **Database**: Cloudflare D1 (SQLite) / supports MySQL, MariaDB, PostgreSQL, SQL Server
-- **Cache**: Cloudflare KV (optional)
+- **Database**: Cloudflare D1 (SQLite) / KV / Blob / Durable Objects, or external MySQL / MariaDB
 - **Language**: TypeScript
 - **Build tools**: Wrangler, esbuild
 
 ### Frontend
 
-- **Framework**: React 19 + TypeScript
-- **UI libraries**: Ant Design / Material-UI
+- **Framework**: SolidJS + TypeScript (official [OpenList-Frontend](https://github.com/OpenListTeam/OpenList-Frontend))
+- **UI library**: Hope UI
 - **Build tool**: Vite
 
 ---
 
 
-## Configuration
+## Deployment Configuration
 
-### Environment Variables
+After deployment, set the following variables:
 
-#### Database Configuration
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `JWT_SECRET` | (none) | JWT signing key (≥16 chars) |
+| `DB_FORMAT` | `map` | `map` (JSON) / `key` (per key) / `sql` (relational) |
+| `DB_DRIVER` | `auto` | `auto` / `blob` / `cfkv` / `kv` / `d1` / `do` / `mysql` |
+| `DB_CIPHER` | `none` | At-rest cipher for sensitive fields, e.g. `aes-256-gcm` |
 
-**DB_FORMAT** (Data Storage Format)
-- `map` (default): Whole object JSON format, suitable for KV/Blob simple storage
-- `key`: Per-key storage format, each entity as a separate record (e.g., `users_1`), avoids large JSON
-- `sql`: Relational database table format, fully compatible with Go backend, suitable for D1/MySQL
-
-**DB_DRIVER** (Database Driver)
-- `auto` (default): Auto-detect available drivers (priority: mysql → d1 → kv → cfkv → blob → do)
-- `blob`: Tencent EdgeOne Blob / Alibaba ESA Blob
-- `cfkv`: Cloudflare KV REST API (requires `CF_ACCOUNT`, `CF_KV_UUID`, `CF_API_KEY`)
-- `kv`: Cloudflare KV binding (binding name is fixed to `KV`)
-- `d1`: Cloudflare D1 (SQLite)
-- `do`: Cloudflare Durable Objects (SQLite)
-- `mysql`: MySQL (Node.js container only)
-
-**Recommended Configurations:**
-```bash
-# Cloudflare Workers + D1 (recommended)
-DB_FORMAT=sql
-DB_DRIVER=d1
-
-# EdgeOne + Blob
-DB_FORMAT=map
-DB_DRIVER=blob
-
-# Cloudflare KV (high-frequency read/write)
-DB_FORMAT=key
-DB_DRIVER=kv
-
-# Remote Cloudflare KV access
-DB_FORMAT=key
-DB_DRIVER=cfkv
-CF_ACCOUNT=your_account_id
-CF_KV_UUID=your_namespace_id
-CF_API_KEY=your_api_token
-```
-
-> An explicitly configured driver is **never replaced automatically**. If it is
-> unavailable the request is rejected with an actionable reason (including which
-> driver auto-detection would have picked); `/api/public/env_check` and
-> `/api/public/init_status` report the same reason plus a one-line fix. This
-> prevents "I thought it was KV, but writes went to another backend".
-> Invalid driver/format pairs (e.g. `DB_FORMAT=sql` + `DB_DRIVER=kv`) are
-> reported the same way — the app never rewrites your configuration.
-
-**Backward Compatibility:**
-- `DB_DRIVER=json` auto-converts to `DB_FORMAT=map` + auto-detect driver
-
-**Table Naming (SQL format only):**
-The `sql` format uses columnar tables with the same naming strategy as the Go backend's GORM (snake_case + pluralized names + prefix):
-
-| Go struct     | Table name         |
-| :------------ | :----------------- |
-| `SettingItem` | `x_setting_items`  |
-| `SharingDB`   | `x_sharing_dbs`    |
-| `Storage`     | `x_storages`       |
-| `User`        | `x_users`          |
-| `Meta`        | `x_metas`          |
-| (TS only)     | `x_plugins`        |
-
-The prefix is fixed to `x_` (matching the Go backend default), so no extra configuration is needed to share the same physical database with the Go backend.
-
-#### Security Configuration
-
-- `JWT_SECRET`: JWT signing key (required), also used for data encryption and cron task authentication
-- `ADMIN_PASS`: Initial admin password (optional, skips the setup wizard and auto-initializes admin)
-
-#### Other Configuration
-
-For detailed configuration, please refer to the [official documentation](https://doc.oplist.org/guide/configuration)
-
----
-
+For the full variable list, see [Configuration variables](https://doc.oplist.org/ecosystem/official_worker/guide_env).
 
 ## Support
 
