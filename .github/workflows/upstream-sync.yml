@@ -45,6 +45,8 @@ jobs:
             for f in wrangler.jsonc README.md; do
               if git diff --name-only --diff-filter=U | grep -qx "$f"; then git checkout --ours -- "$f"; git add "$f"; fi
             done
+            # Translated READMEs are deleted here; keep them deleted when upstream edits them.
+            git diff --name-only --diff-filter=U | grep -E '^readmes/[^/]+\.md$' | xargs -r git rm -q --
             left=$(git diff --name-only --diff-filter=U)
             if [ -n "$left" ]; then
               git merge --abort
