@@ -1,4 +1,7 @@
-# /oc builder: comment "/oc <request>" on an issue or PR. Logic lives in haimcslab/oc-builder.
+# /oc builder, inline copy of haimcslab/oc-builder/.github/workflows/builder.yml.
+# This repo is public, so it cannot call the private oc-builder workflow, and it
+# runs on GitHub-hosted runners (free for public repos) instead of the dock runner.
+# Keep in sync with oc-builder by hand.
 name: oc builder
 
 on:
@@ -12,11 +15,60 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  oc:
-    uses: haimcslab/oc-builder/.github/workflows/builder.yml@main
+  opencode:
+    # Only owners/members/collaborators can start a run (each run spends model budget).
+    if: |
+      (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode')) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       issues: write
-    secrets:
-      CF_WORKERS_AI_TOKEN: ${{ secrets.CF_WORKERS_AI_TOKEN }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "MCS Studio Builder"
+          git config --global user.email "builder@haimcslab.com"
+
+      # Default config outside the workspace so it is never committed.
+      # A repo's own opencode.json takes precedence over it.
+      - name: Write default opencode config
+        run: |
+          cat > "$RUNNER_TEMP/opencode.json" <<'JSON'
+          {
+            "$schema": "https://opencode.ai/config.json",
+            "enabled_providers": ["haimcslab-gw"],
+            "model": "haimcslab-gw/workers-ai/@cf/moonshotai/kimi-k2.7-code",
+            "small_model": "haimcslab-gw/workers-ai/@cf/zai-org/glm-5.3-flash",
+            "provider": {
+              "haimcslab-gw": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "haimcslab AI Gateway (builder)",
+                "options": {
+                  "baseURL": "https://gateway.ai.cloudflare.com/v1/23d2119251af1e3d761921eadb8e7e0f/haimcslab/compat",
+                  "apiKey": "{env:CF_WORKERS_AI_TOKEN}",
+                  "headers": { "cf-aig-authorization": "Bearer {env:CF_WORKERS_AI_TOKEN}", "cf-aig-metadata": "{\"user_id\":\"github-builder\",\"repo\":\"${{ github.repository }}\"}" }
+                },
+                "models": {
+                  "workers-ai/@cf/moonshotai/kimi-k2.7-code": { "name": "Kimi K2.7 Code" },
+                  "workers-ai/@cf/zai-org/glm-5.3-flash": { "name": "GLM-5.3 Flash" }
+                }
+              }
+            }
+          }
+          JSON
+          echo "OPENCODE_CONFIG=$RUNNER_TEMP/opencode.json" >> "$GITHUB_ENV"
+
+      - uses: anomalyco/opencode/github@2c14fc5586fe0b88e5c04732d2e846769cc35671 # tag "latest" on 2026-11-11; release tags (v2.2.x) do not contain github/
+        env:
+          CF_WORKERS_AI_TOKEN: ${{ secrets.CF_WORKERS_AI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          model: haimcslab-gw/workers-ai/@cf/moonshotai/kimi-k2.7-code
+          use_github_token: true
