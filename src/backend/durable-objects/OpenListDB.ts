@@ -27,7 +27,9 @@ export class OpenListDB {
     return (this.state.storage as any).sql
   }
 
-  /** 建表（幂等）：KV 表（map/key 格式）+ 列式表（sql 格式）。 */
+  /**
+   * 建表（幂等）：KV 表（map/key 格式）+ 列式表（sql 格式）。
+   */
   private ensureSchema(): void {
     for (const ddl of [...KV_SCHEMA_SQLITE, ...D1_SCHEMA]) {
       this.sql.exec(ddl)

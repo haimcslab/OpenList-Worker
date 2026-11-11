@@ -65,6 +65,9 @@ function pan123FileToFileItem(f: Pan123File): FileItem {
 }
 
 export class Pan123Driver implements StorageDriver {
+  readonly rapidHashAlgos = ["md5"]
+  readonly rapidHashNeedsPieces = false
+
   private client: Pan123Client
   private addition: Pan123Addition
   /** cache: physical path → folder FileId (string) */
@@ -388,7 +391,7 @@ export class Pan123Driver implements StorageDriver {
   async put(
     _virtualPath: string,
     physicalPath: string,
-    content: Buffer,
+    content: Uint8Array,
   ): Promise<void> {
     this.budget.used = 0
     const segs = String(physicalPath || "")
@@ -464,7 +467,7 @@ export class Pan123Driver implements StorageDriver {
   async uploadPart(
     session: string,
     partNumber: number,
-    content: Buffer,
+    content: Uint8Array,
   ): Promise<void> {
     this.budget.used = 0
     const s = decodeSession(session)

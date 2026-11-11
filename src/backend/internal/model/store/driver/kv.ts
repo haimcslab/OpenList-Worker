@@ -1,13 +1,14 @@
 /**
  * KV 驱动（自动适配 Cloudflare / EdgeOne）
- * 
+ *
  * 支持两种模式：
  * 1. Binding 模式：直接访问 KV binding（Cloudflare Workers / EdgeOne Edge Functions）
  * 2. HTTP 代理模式：通过 Edge Function 代理访问（EdgeOne Node Functions）
- * 
+ *
  * 自动检测环境并选择合适的模式。
  */
 import { sanitizeProxyOrigin } from "../proxy"
+import { KV_HEALTH_PROBE_KEY, readFormat } from "../config"
 import type { Driver, EnvContext } from "../types"
 
 /**
@@ -69,6 +70,33 @@ function getProxySecret(env?: EnvContext): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * 当前环境是否有充分依据启用 EdgeOne KV HTTP 代理探测。
+ *
+ * `__requestOrigin` 不能作为平台依据：index.ts 会给所有平台和自托管请求注入它。
+ * 旧实现只要同时看到 origin 与 JWT_SECRET，就会在 DB_DRIVER=auto 时请求当前站点
+ * 的 /kv-list；没有该代理的站点若恰好把未知路径回退成 HTML 200，便会被误判为
+ * KV 可用，随后把 HTML 当 JSON 读取，并让 /env_check 错报 ready=true。
+ *
+ * 只有以下情况才允许无 binding 的代理模式：
+ *  1. 用户显式指定 DB_DRIVER=kv；
+ *  2. 用户显式提供 EO_KV_URLS；
+ *  3. EdgeOne Node 云函数的可靠 SCF 运行时标记存在。
+ */
+function shouldProbeProxy(env?: any): boolean {
+  const configured = String(env?.DB_DRIVER || "")
+    .trim()
+    .toLowerCase()
+  const procEnv: any =
+    typeof process !== "undefined" ? (process as any).env || {} : {}
+  return Boolean(
+    configured === "kv" ||
+    env?.EO_KV_URLS ||
+    env?.TENCENTCLOUD_SCF_FUNCTIONNAME ||
+    procEnv.TENCENTCLOUD_SCF_FUNCTIONNAME,
+  )
 }
 
 /**
@@ -161,7 +189,7 @@ function getProxyBaseUrl(env?: EnvContext): string {
  * KV 代理健康探测（唯一实现）。
  *
  * isAvailable() 与 health() 共用，避免两处各自实现导致判定标准漂移。
- * 判定：HTTP 200 表示代理与 KV 均可用；401 表示代理可达但鉴权失败，
+ * 判定：HTTP 200 且返回合法 key 列表表示代理与 KV 均可用；401 表示代理可达但鉴权失败，
  * 属于「代理部署存在但密钥不对」。
  *
  * 注意两个调用方对 401 的取舍不同，故这里只返回原始探测结果，
@@ -194,7 +222,26 @@ async function probeProxy(
       method: "GET",
       headers: buildProxyHeaders(env),
     })
-    return { ok: response.ok, status: response.status }
+    if (!response.ok) {
+      return { ok: false, status: response.status }
+    }
+    try {
+      const payload = await response.json()
+      if (!payload || !Array.isArray(payload.keys)) {
+        return {
+          ok: false,
+          status: response.status,
+          error: "KV proxy health response is not a valid key listing",
+        }
+      }
+      return { ok: true, status: response.status }
+    } catch {
+      return {
+        ok: false,
+        status: response.status,
+        error: "KV proxy health response is not valid JSON",
+      }
+    }
   } catch (err: any) {
     return { ok: false, status: 0, error: err?.message || String(err) }
   }
@@ -258,9 +305,13 @@ export const kvDriver: Driver = {
     }
 
     // 模式2: HTTP 代理（EdgeOne Node Functions 拿不到 binding）
+    // __requestOrigin 本身不能证明代理存在；auto 模式下必须有显式配置或
+    // EdgeOne Node 的平台标记，否则未知路由的 HTML 200 会造成假阳性。
+    if (!shouldProbeProxy(env)) return false
     const probe = await probeProxy(env)
     if (!probeToAvailability(probe)) {
-      if (probe.error) console.error("[DB] KV proxy unavailable: " + probe.error)
+      if (probe.error)
+        console.error("[DB] KV proxy unavailable: " + probe.error)
       return false
     }
     return true
@@ -272,7 +323,7 @@ export const kvDriver: Driver = {
 
   async get(key: string, env?: any): Promise<string | null> {
     const kv = getKvBinding(env)
-    
+
     // 模式1: Binding 模式
     if (kv) {
       // Cloudflare KV 用 get(key, "text")，EdgeOne KV 用 get(key, {type:"text"})，
@@ -312,7 +363,7 @@ export const kvDriver: Driver = {
       // 绑定误返回对象时统一序列化，保持 Driver.get 的 string 契约
       return JSON.stringify(value)
     }
-    
+
     // 模式2: HTTP 代理模式（无原生 binding → 经 Edge Function 代理）
     const baseUrl = requireProxyBaseUrl(env)
     const url = `${baseUrl}/kv-get?key=${encodeURIComponent(key)}`
@@ -330,7 +381,7 @@ export const kvDriver: Driver = {
         throw new Error(`KV proxy get failed: ${response.status}`)
       }
 
-      const data = await response.json() as { value?: string | null }
+      const data = (await response.json()) as { value?: string | null }
       // 归一化为 string | null：Edge Function 在错误分支只返回 { error }，
       // 此时 data.value 为 undefined，不能直接透传（调用方按 === null 判断会漏掉）。
       if (data?.value === undefined || data?.value === null) return null
@@ -343,13 +394,13 @@ export const kvDriver: Driver = {
 
   async put(key: string, value: string, env?: any): Promise<void> {
     const kv = getKvBinding(env)
-    
+
     // 模式1: Binding 模式
     if (kv) {
       await kv.put(key, value)
       return
     }
-    
+
     // 模式2: HTTP 代理模式
     const baseUrl = requireProxyBaseUrl(env)
     const url = `${baseUrl}/kv-put`
@@ -372,13 +423,13 @@ export const kvDriver: Driver = {
 
   async delete(key: string, env?: any): Promise<void> {
     const kv = getKvBinding(env)
-    
+
     // 模式1: Binding 模式
     if (kv) {
       await kv.delete(key)
       return
     }
-    
+
     // 模式2: HTTP 代理模式
     const baseUrl = requireProxyBaseUrl(env)
     const url = `${baseUrl}/kv-delete?key=${encodeURIComponent(key)}`
@@ -400,37 +451,84 @@ export const kvDriver: Driver = {
 
   async list(prefix: string, env?: any): Promise<string[]> {
     const kv = getKvBinding(env)
-    
+
     // 模式1: Binding 模式
     if (kv) {
-      // EdgeOne KV list() 语义（依据官方 functions-kv 示例）：
-      //   page.keys -> [{ key, ttl, meta }]，page.complete 为 true 表示末页，
-      //   下一页 cursor 需手动取本页最后一个 key。
-      const keys: string[] = []
+      // 两种平台的 list() 返回形态不同，必须逐页识别（issue #125）：
+      //   Cloudflare Workers KV（KVNamespaceListResult）：
+      //     keys: [{ name, ... }]、list_complete: boolean、cursor?: string
+      //     —— 游标由服务端下发，原样回传即可；
+      //   EdgeOne KV（依据官方 functions-kv 示例）：
+      //     keys: [{ key, ttl, meta }]、complete: boolean
+      //     —— 无 cursor 字段，下一页游标取本页最后一个 key。
+      // 早期实现只按 EdgeOne 语义读 item.key / page.complete：在 Cloudflare
+      // 上两字段恒为 undefined —— keys 恒为空、complete 恒 false，且 cursor
+      // 被赋值为 ""（undefined || ""），每轮以同一游标重复拉取同一页直到
+      // guard 上限，单次 list() 消耗上千次真实 KV list 请求，直接打满
+      // Cloudflare 免费版 1000 次/天的 list 配额（issue #125）。
+      const seen = new Set<string>()
       let cursor = ""
       let complete = false
       let guard = 0
+      let prevFirstKey: string | null = null
 
       while (!complete && guard < 1000) {
         guard += 1
 
-        const page = await kv.list({ prefix, cursor, limit: 256 })
+        const page: any = await kv.list({ prefix, cursor, limit: 256 })
         const pageKeys = Array.isArray(page?.keys) ? page.keys : []
 
+        // 空页视为末页（两种平台一致，也是未知形态的兜底）
+        if (pageKeys.length === 0) break
+
+        // 名称字段：Cloudflare 为 name，EdgeOne 为 key
+        const names: string[] = []
         for (const item of pageKeys) {
-          if (item?.key) keys.push(item.key)
+          const name = typeof item?.name === "string" ? item.name : item?.key
+          if (typeof name === "string" && name.length > 0) names.push(name)
+        }
+        // 形态无法识别时中止，绝不能空转（空转 = 每轮一次真实 list 请求）
+        if (names.length === 0) break
+
+        // 重复页检测：游标未推进（平台语义变化/回传失败）时立即终止，
+        // 与 functions/kv-list 代理端的同款防护一致
+        if (prevFirstKey !== null && names[0] === prevFirstKey) {
+          console.warn("[KV] repeated page detected; stopping list pagination")
+          break
+        }
+        prevFirstKey = names[0]
+
+        for (const name of names) seen.add(name)
+
+        // 末页判定：Cloudflare list_complete / EdgeOne complete 优先；
+        // 两者都没有时以「是否有下一页游标」推进为准。
+        const listDone =
+          page?.list_complete !== undefined
+            ? Boolean(page.list_complete)
+            : page?.complete !== undefined
+              ? Boolean(page.complete)
+              : false
+        if (listDone) {
+          complete = true
+          break
         }
 
-        if (pageKeys.length > 0) {
-          cursor = pageKeys[pageKeys.length - 1].key || ""
-        }
+        // 游标：优先服务端下发的 cursor（Cloudflare）；EdgeOne 无该字段，
+        // 回退为本页最后一个 key。
+        const lastKey = names[names.length - 1]
+        const nextCursor =
+          typeof page?.cursor === "string" && page.cursor.length > 0
+            ? page.cursor
+            : lastKey
 
-        complete = Boolean(page?.complete) || pageKeys.length === 0
+        // 无游标可推进时中止：继续循环只会拉取同一页（issue #125 的配额爆炸路径）
+        if (!nextCursor || nextCursor === cursor) break
+        cursor = nextCursor
       }
 
-      return keys
+      return [...seen]
     }
-    
+
     // 模式2: HTTP 代理模式
     const baseUrl = requireProxyBaseUrl(env)
     const url = `${baseUrl}/kv-list?prefix=${encodeURIComponent(prefix)}`
@@ -445,7 +543,7 @@ export const kvDriver: Driver = {
         throw new Error(`KV proxy list failed: ${response.status}`)
       }
 
-      const data = await response.json() as { keys: string[] }
+      const data = (await response.json()) as { keys: string[] }
       return data.keys || []
     } catch (err) {
       console.error(`[KV] list(${prefix}) failed:`, err)
@@ -455,11 +553,32 @@ export const kvDriver: Driver = {
 
   async health(env?: any): Promise<any> {
     const kv = getKvBinding(env)
-    
+
     // 模式1: Binding 模式
     if (kv) {
       try {
-        await kv.get("__health_check__")
+        // ESA wrapper 的业务 get 为兼容缓存会把底层错误映射成 null；若它提供
+        // 直连探测方法，健康检查必须绕开该容错，以免把读取故障误报成可用。
+        if (typeof kv.healthCheck === "function") {
+          await kv.healthCheck()
+        } else {
+          await kv.get(KV_HEALTH_PROBE_KEY)
+        }
+        // key 格式的 load/save 依赖 list；map 格式只读写固定的 openlist_config,
+        // 不要求 EdgeKV 暴露 list API（ESA EdgeKV 内置 API 仅提供 get/put/delete）。
+        // 只有 key 格式才探测 list，避免 map 格式部署被不支持的 list() 误判为
+        // 存储不可用（issue #159）。对 key 格式仍检查 list，防止配额耗尽/接口异常
+        // 导致 env_check 误报 ready（issue #125）。使用专用前缀，取回空页只耗 1 次。
+        // 直接复用后端的 readFormat()：健康检查与真实读写必须用同一份解析逻辑
+        // （env 优先级、缺省 map、DB_DRIVER=json 别名），复刻一份迟早漂移。
+        if (readFormat(env) === "key") {
+          if (typeof kv.list !== "function") {
+            throw new Error(
+              "KV binding does not support list(), which is required by DB_FORMAT=key",
+            )
+          }
+          await kv.list({ prefix: KV_HEALTH_PROBE_KEY, cursor: "", limit: 256 })
+        }
         return {
           driver: "kv",
           mode: "binding",
@@ -475,7 +594,7 @@ export const kvDriver: Driver = {
         }
       }
     }
-    
+
     // 模式2: HTTP 代理模式。
     //
     // 判定比 isAvailable 更严格（见 probeToHealth / probeToAvailability 的注释）：

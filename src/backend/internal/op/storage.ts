@@ -1,4 +1,5 @@
 import { resolvePath, getDb, getSettings, saveDb } from "../model/db"
+import { isSafeUrl } from "../../pkg/http"
 import { encodeDownloadPath } from "../../pkg/path"
 import { canUseProxyEndpoint, normalizeExtList } from "../driver/proxy"
 import { FileItem, StorageDriver, calcFileType } from "../driver/base"
@@ -7,7 +8,6 @@ import { OnedriveAPP } from "../../drivers/onedrive_app/driver"
 import { AliyundriveOpen } from "../../drivers/aliyundrive_open/driver"
 import { GoogleDrive } from "../../drivers/google_drive/driver"
 import { QuarkDriver } from "../../drivers/quark/driver"
-import { Driver115 } from "../../drivers/115/driver"
 import { DriverCloudreve } from "../../drivers/cloudreve_v4/driver"
 import { DriverCloudreveV3 } from "../../drivers/cloudreve_v3/driver"
 import { DriverOpenlist } from "../../drivers/openlist/driver"
@@ -44,12 +44,14 @@ import {
   ThunderExpertDriver,
 } from "../../drivers/thunder/driver"
 import { LanzouDriver } from "../../drivers/lanzou/driver"
+import { CtFileDriver } from "../../drivers/ctfile/driver"
 import { Cloud189Driver } from "../../drivers/189/driver"
 import { Driver189TV } from "../../drivers/189_tv/driver"
 import { WebdavDriver } from "../../drivers/webdav/driver"
 import { WoPanDriver, normalizeWoPanAddition } from "../../drivers/wopan/driver"
 import { MoPanDriver } from "../../drivers/mopan/driver"
 import { S3Driver, normalizeS3Addition } from "../../drivers/s3/driver"
+import { R2Driver } from "../../drivers/r2/driver"
 import {
   WeiyunDriver,
   normalizeWeiyunAddition,
@@ -284,14 +286,10 @@ async function createDriver(
   ) {
     driver = new QuarkDriver(parseAddition(storageConfig))
     await driver.init?.()
-  } else if (
-    normDriver === "115" ||
-    normDriver === "115cloud" ||
-    normDriver === "115open" ||
-    normDriver === "115netdisk"
-  ) {
-    driver = new Driver115(parseAddition(storageConfig))
-    await driver.init?.()
+  // 注意：115 / 115Open 统一走 Pan115Driver（115open 目录）。
+  // 旧 drivers/115（Client115）端点写成 /open + /open/ufile/files → /open/open/ufile/files，
+  // 且用 POST+JSON，115 开放平台实际要求 GET+query，会报 "Method POST does not exist"，
+  // 再经错误模板输出为 "[115] API error ()"。该分支已在下方 normDriver.startsWith("115") 处理。
   } else if (
     normDriver === "cloudreve" ||
     normDriver === "cloudrevev3" ||
@@ -381,6 +379,7 @@ async function createDriver(
     await driver.init?.()
   } else if (
     normDriver === "quarktv" ||
+    normDriver === "quarkuctv" ||
     normDriver === "uctv" ||
     normDriver === "quark_uc_tv"
   ) {
@@ -711,6 +710,16 @@ async function createDriver(
     })
     await driver.init?.()
   } else if (
+    normDriver === "ctfile" ||
+    normDriver === "ctfilepan" ||
+    normDriver === "ctfiledriver" ||
+    normDriver === "400gb" ||
+    normDriver.includes("ctfile")
+  ) {
+    const addition = parseAddition(storageConfig)
+    driver = new CtFileDriver(addition)
+    await driver.init?.()
+  } else if (
     normDriver === "189tv" ||
     normDriver === "cloud189tv" ||
     normDriver === "189tvcloud" ||
@@ -755,13 +764,25 @@ async function createDriver(
     driver = new WebdavDriver(addition)
     await driver.init?.()
   } else if (
+    // Cloudflare R2 独立驱动（"Cloudflare R2" / "r2" / "cloudflare_r2" / "cfr2"
+    // 归一化后都会落到这里）。必须在下面的 S3 分支之前匹配。
+    normDriver === "r2" ||
+    normDriver === "cloudflarer2" ||
+    normDriver === "cfr2" ||
+    normDriver === "r2native"
+  ) {
+    const addition = parseAddition(storageConfig)
+    driver = new R2Driver(addition)
+    await driver.init?.()
+  } else if (
+    // S3 兼容家族。注意：`r2` 已由上一分支接管，这里不能再列它
+    // （会被上方分支拦截成死代码，且让「r2 走哪条路」变得难读）。
     normDriver === "s3" ||
     normDriver === "doge" ||
     normDriver === "dogecloud" ||
     normDriver === "minio" ||
     normDriver === "ceph" ||
     normDriver === "aws" ||
-    normDriver === "r2" ||
     normDriver === "b2" ||
     normDriver === "cos" ||
     normDriver === "oss" ||
@@ -987,7 +1008,57 @@ async function createDriver(
     normDriver.includes("139")
   ) {
     const addition = parseAddition(storageConfig)
-    driver = new Yun139Driver(addition)
+    driver = new Yun139Driver(
+      addition,
+      async (authorization) => {
+        try {
+          const db = await getDb()
+          const st = (db.storages || []).find(
+            (s: any) => s.id === storageConfig?.id,
+          )
+          if (!st) return
+          const stAddition =
+            typeof st.addition === "string"
+              ? JSON.parse(st.addition || "{}")
+              : st.addition || {}
+          stAddition.authorization = authorization
+          st.addition = JSON.stringify(stAddition)
+          // Keep the in-flight admin update object in sync so it cannot overwrite
+          // the newly refreshed authorization with the previous value.
+          storageConfig.addition = st.addition
+          if (deferredTokenPersistence.has(storageConfig)) return
+          await saveDb(db)
+        } catch (e) {
+          console.warn("[139] failed to persist refreshed authorization:", e)
+        }
+      },
+      async (state) => {
+        try {
+          const db = await getDb()
+          const st = (db.storages || []).find(
+            (s: any) => s.id === storageConfig?.id,
+          )
+          if (!st) return
+          const stAddition =
+            typeof st.addition === "string"
+              ? JSON.parse(st.addition || "{}")
+              : st.addition || {}
+          if (state.authorization)
+            stAddition.authorization = state.authorization
+          if (state.userDomainId) {
+            stAddition.user_domain_id = state.userDomainId
+          }
+          stAddition.mail_cookies = state.mailCookies
+          stAddition.sms_code = state.smsCode
+          st.addition = JSON.stringify(stAddition)
+          storageConfig.addition = st.addition
+          if (deferredTokenPersistence.has(storageConfig)) return
+          await saveDb(db)
+        } catch (e) {
+          console.warn("[139] failed to persist login state:", e)
+        }
+      },
+    )
     await driver.init?.()
   } else if (
     normDriver === "mega" ||
@@ -995,7 +1066,40 @@ async function createDriver(
     normDriver.includes("mega")
   ) {
     const addition = parseAddition(storageConfig)
-    driver = new MegaDriver(addition)
+    driver = new MegaDriver(addition, async (session) => {
+      try {
+        const db = await getDb()
+        const st = (db.storages || []).find((s: any) => s.id === storageConfig?.id)
+        if (!st) return
+        const stAddition =
+          typeof st.addition === "string"
+            ? JSON.parse(st.addition || "{}")
+            : st.addition || {}
+        if (
+          stAddition.sid === session.sid &&
+          stAddition.master_key === session.masterKey
+        ) {
+          return
+        }
+        stAddition.sid = session.sid
+        stAddition.master_key = session.masterKey
+        st.addition = JSON.stringify(stAddition)
+        // /admin/storage/update 会用提交前的 updatedStorage 覆盖 db，这里同步
+        // 写回它，避免刚拿到的会话被旧快照冲掉（与 139/GuangYaPan 的处理一致）。
+        if (deferredTokenPersistence.has(storageConfig)) {
+          storageConfig.addition = JSON.stringify({
+            ...parseAddition(storageConfig),
+            sid: session.sid,
+            master_key: session.masterKey,
+          })
+          return
+        }
+        storageConfig.addition = st.addition
+        await saveDb(db)
+      } catch (e) {
+        console.warn("[Mega] failed to persist session:", e)
+      }
+    })
     await driver.init?.()
   } else if (
     normDriver === "115share" ||
@@ -1155,7 +1259,7 @@ async function createDriver(
     await driver.init?.()
   } else if (normDriver === "guangyapan" || normDriver === "guangya") {
     const addition = parseAddition(storageConfig)
-    driver = new GuangYaPanDriver(addition, async (accessToken, refreshToken) => {
+    driver = new GuangYaPanDriver(addition, async (changes) => {
       try {
         const db = await getDb()
         const st = (db.storages || []).find(
@@ -1166,12 +1270,24 @@ async function createDriver(
           typeof st.addition === "string"
             ? JSON.parse(st.addition || "{}")
             : st.addition || {}
-        stAddition.access_token = accessToken
-        if (refreshToken) stAddition.refresh_token = refreshToken
+        // 合并需要持久化的字段（access_token/refresh_token/verification_id/
+        // captcha_token/send_code 等），空串用于显式清除一次性字段
+        Object.assign(stAddition, changes)
         st.addition = JSON.stringify(stAddition)
+        // 把驱动回写同步给 in-flight 的 updatedStorage：/admin/storage/update 会用
+        // updatedStorage 覆盖 db，若不同步，驱动刚写入的登录态（verification_id 等）
+        // 会被提交前的旧快照覆盖。这里以本次提交的 addition 为基底叠加驱动改动，
+        // 既保留登录态，也不会把用户本次编辑的其它配置项回退成旧值。
+        if (deferredTokenPersistence.has(storageConfig)) {
+          storageConfig.addition = JSON.stringify({
+            ...parseAddition(storageConfig),
+            ...changes,
+          })
+          return
+        }
         await saveDb(db)
       } catch (e) {
-        console.warn("[GuangYaPan] failed to persist tokens:", e)
+        console.warn("[GuangYaPan] failed to persist changes:", e)
       }
     })
     await driver.init?.()
@@ -1330,11 +1446,25 @@ export async function flushPendingDriverState(
   await scheduleStoragePersistence(requestContext?.waitUntil, persistence)
 }
 
+/**
+ * fs 读操作的入口。
+ *
+ * 每次调用都直接回源驱动：既没有结果缓存，也没有跨请求/跨实例的调用合并，
+ * 目录与元信息始终反映上游的最新状态。
+ */
 export async function listItems(
   virtualPath: string,
   requestContext?: StorageRequestContext,
 ): Promise<{ content: FileItem[]; provider: string; storage?: any }> {
   const resolved = await resolvePath(virtualPath, requestContext?.env)
+  return listItemsResolved(resolved, virtualPath, requestContext)
+}
+
+async function listItemsResolved(
+  resolved: Awaited<ReturnType<typeof resolvePath>>,
+  virtualPath: string,
+  requestContext?: StorageRequestContext,
+): Promise<{ content: FileItem[]; provider: string; storage?: any }> {
   let items: FileItem[] = []
   let driverName = "Virtual"
 
@@ -1469,6 +1599,14 @@ export async function getItem(
   requestContext?: StorageRequestContext,
 ): Promise<{ item: FileItem; provider: string; rawUrl: string }> {
   const resolved = await resolvePath(virtualPath, requestContext?.env)
+  return getItemResolved(resolved, virtualPath, requestContext)
+}
+
+async function getItemResolved(
+  resolved: Awaited<ReturnType<typeof resolvePath>>,
+  virtualPath: string,
+  requestContext?: StorageRequestContext,
+): Promise<{ item: FileItem; provider: string; rawUrl: string }> {
   if (resolved.isVirtual) {
     const name = resolved.cleanPath.split("/").filter(Boolean).pop() || "root"
     return {
@@ -1676,7 +1814,8 @@ export async function copyItems(
 
 export async function putItem(
   virtualPath: string,
-  content: Buffer,
+  // Uint8Array 而非 Node Buffer：ESA 等边缘运行时没有全局 Buffer（Issue #169）
+  content: Uint8Array,
   requestContext?: StorageRequestContext,
 ): Promise<void> {
   const resolved = await resolvePath(virtualPath, requestContext?.env)
@@ -1693,5 +1832,189 @@ export async function putItem(
       driver,
       requestContext,
     )
+  }
+}
+
+/**
+ * 媒体刮削读取文件内容的上限：任何一次读取都不得超过 32MB。
+ *
+ * 刮削只需要文件头（ID3/FLAC/图片头）或尾部（ID3v1 / ZIP 中央目录），
+ * 但少数存储不支持 Range，会退化成整文件下载，因此必须有硬上限。
+ */
+export const MAX_MEDIA_READ_BYTES = 32 * 1024 * 1024
+
+/** 本地存储的区间读取（Node 运行时；Worker 下 import 会失败并返回 null） */
+async function readLocalRange(
+  physicalPath: string,
+  start: number,
+  want: number,
+): Promise<Uint8Array | null> {
+  try {
+    const fs = await import("node:fs/promises")
+    const fh = await fs.open(physicalPath, "r")
+    try {
+      const size = (await fh.stat()).size
+      if (start >= size) return new Uint8Array(0)
+      const len = Math.min(want, size - start)
+      const buf = new Uint8Array(len)
+      const { bytesRead } = await fh.read(buf, 0, len, start)
+      return buf.subarray(0, bytesRead)
+    } finally {
+      await fh.close()
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 读取 VFS 文件的指定区间（用于 ID3 标签、EPUB 封面、图片缩略图等）。
+ *
+ * 行为：
+ *   1. 通过驱动换链拿到 raw_url，再带 `Range` 请求；
+ *   2. 上游返回 206 时直接切片；
+ *   3. 上游忽略 Range 返回 200 时，流式丢弃 `offset` 字节后最多读 `length` 字节，
+ *      避免把整个大文件读进内存；
+ *   4. 任何失败返回 null（刮削属于尽力而为，不应中断主流程）。
+ */
+export async function readFileRange(
+  virtualPath: string,
+  offset: number,
+  length: number,
+  requestContext?: StorageRequestContext,
+): Promise<Uint8Array | null> {
+  const start = Math.max(0, Math.floor(offset) || 0)
+  const want = Math.min(
+    MAX_MEDIA_READ_BYTES,
+    Math.max(1, Math.floor(length) || 1),
+  )
+  let resolved: Awaited<ReturnType<typeof resolvePath>>
+  try {
+    resolved = await resolvePath(virtualPath, requestContext?.env)
+  } catch {
+    return null
+  }
+  if (resolved.isVirtual || !resolved.storage) return null
+
+  let item: FileItem
+  const driver = await getDriver(resolved.storage.driver, resolved.storage)
+  try {
+    item = await driver.get(virtualPath, resolved.physical!)
+  } catch (e: any) {
+    console.warn(`[op] read ${virtualPath} link failed:`, e?.message || e)
+    return null
+  } finally {
+    await flushPendingDriverState(
+      resolved.storage.driver,
+      resolved.storage,
+      driver,
+      requestContext,
+    )
+  }
+  if (!item?.raw_url) {
+    // LocalDriver 没有 raw_url（本地文件不走 HTTP）。Node 运行时直接读区间，
+    // 否则本地存储的音频/图片永远读不到标签与封面（PR #148 评审 #25）。
+    if (resolved.storage.driver === "local") {
+      return readLocalRange(resolved.physical!, start, want)
+    }
+    return null
+  }
+
+  const headers: Record<string, string> = {
+    ...(item.raw_url_headers || {}),
+    Range: `bytes=${start}-${start + want - 1}`,
+  }
+  try {
+    // 手动跟随重定向：默认 fetch 会自动跳转，既绕过 SSRF 校验，也会把
+    // raw_url_headers（Cookie/Authorization）原样带给第三方。每一跳都重新
+    // 校验目标地址，跨域时丢弃凭据头（对齐 server/raw.ts 的 safeProxyFetch）。
+    let currentUrl = item.raw_url
+    let currentHeaders: Record<string, string> = { ...headers }
+    let res: Response | null = null
+    for (let hop = 0; hop < 5; hop++) {
+      // 首跳地址来自管理员配置的驱动（可能是有意为之的内网存储），不做
+      // SSRF 拦截；后续每一跳都必须重新校验，防止公网地址 302 到内网。
+      if (hop > 0) {
+        let safe = false
+        try {
+          safe = isSafeUrl(currentUrl)
+        } catch {
+          safe = false
+        }
+        if (!safe) return null
+      }
+      res = await fetch(currentUrl, {
+        headers: currentHeaders,
+        redirect: "manual",
+      })
+      if (res.status < 300 || res.status >= 400) break
+      const loc = res.headers.get("location")
+      if (!loc) return null
+      let next: URL
+      try {
+        next = new URL(loc, currentUrl)
+      } catch {
+        return null
+      }
+      if (next.origin !== new URL(currentUrl).origin) {
+        currentHeaders = { Range: currentHeaders.Range }
+      }
+      try {
+        await res.body?.cancel()
+      } catch {
+        /* ignore */
+      }
+      currentUrl = next.toString()
+    }
+    if (!res) return null
+    if (!res.ok && res.status !== 206) return null
+
+    if (res.status === 206) {
+      const buf = new Uint8Array(await res.arrayBuffer())
+      return buf.subarray(0, Math.min(buf.length, want))
+    }
+
+    // 200：上游忽略了 Range（或本地文件驱动）。流式跳过 offset。
+    if (!res.body) {
+      const buf = new Uint8Array(await res.arrayBuffer())
+      return buf.subarray(start, start + want)
+    }
+    const reader = res.body.getReader()
+    let skipped = 0
+    const chunks: Uint8Array[] = []
+    let received = 0
+    try {
+      while (received < want) {
+        const { done, value } = await reader.read()
+        if (done || !value) break
+        let chunk = value
+        if (skipped < start) {
+          const drop = Math.min(chunk.length, start - skipped)
+          skipped += drop
+          chunk = chunk.subarray(drop)
+          if (chunk.length === 0) continue
+        }
+        const take = Math.min(chunk.length, want - received)
+        chunks.push(chunk.subarray(0, take))
+        received += take
+      }
+    } finally {
+      try {
+        await reader.cancel()
+      } catch {
+        /* ignore */
+      }
+    }
+    if (chunks.length === 0) return null
+    const out = new Uint8Array(received)
+    let pos = 0
+    for (const c of chunks) {
+      out.set(c, pos)
+      pos += c.length
+    }
+    return out
+  } catch (e: any) {
+    console.warn(`[op] read ${virtualPath} range failed:`, e?.message || e)
+    return null
   }
 }

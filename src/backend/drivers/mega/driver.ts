@@ -5,19 +5,67 @@ import {
 } from "../../internal/driver/base"
 import { sortFileItems } from "../../internal/driver/sort"
 import { MegaAddition, MegaNodeItem } from "./types"
-import { MegaApiClient } from "./util"
+import { MegaApiClient, MegaApiError } from "./util"
+
+export interface MegaSession {
+  sid: string
+  masterKey: string
+}
+
+export type PersistMegaSession = (session: MegaSession) => Promise<void> | void
 
 export class MegaDriver implements StorageDriver {
   private addition: MegaAddition
   private client: MegaApiClient
+  private persistSession?: PersistMegaSession
 
-  constructor(addition: MegaAddition) {
+  constructor(addition: MegaAddition, persistSession?: PersistMegaSession) {
     this.addition = addition
     this.client = new MegaApiClient(addition)
+    this.persistSession = persistSession
   }
 
   async init(): Promise<void> {
+    // 复用上次持久化的会话；sid/master key 任缺其一都只能重新登录（缺
+    // master key 时虽然能列目录，但节点名和下载密钥都解不开）。
+    const cachedSid = this.addition.sid?.trim()
+    const cachedKey = this.addition.master_key?.trim()
+    let resumed = false
+    if (cachedSid && cachedKey) {
+      try {
+        this.client.restoreSession(cachedSid, cachedKey)
+        resumed = true
+      } catch (e) {
+        // 存储里的会话被截断/格式不对时按未登录处理，不能因此让挂载失败。
+        console.warn("[Mega] invalid persisted session, logging in again:", e)
+        this.client.clearSession()
+      }
+    }
+
+    if (resumed) {
+      try {
+        await this.client.fetchNodes()
+        return
+      } catch (e) {
+        if (!(e instanceof MegaApiError) || e.code !== -15) throw e
+        console.warn("[Mega] persisted session expired, logging in again")
+        this.client.clearSession()
+      }
+    }
+
     await this.client.init()
+    const session = this.client.getSession()
+    if (!session) return
+
+    this.addition.sid = session.sid
+    this.addition.master_key = session.masterKey
+    if (!this.persistSession) return
+    try {
+      await this.persistSession(session)
+    } catch (e) {
+      // 持久化失败只影响下次冷启动要重新登录，不能因此让本次挂载失败。
+      console.warn("[Mega] failed to persist session:", e)
+    }
   }
 
   private cleanPath(p: string): string {
@@ -152,20 +200,18 @@ export class MegaDriver implements StorageDriver {
     srcPhys: string,
     dstPhys: string,
   ): Promise<void> {
-    const dstNode = this.resolveNodeByPath(this.cleanPath(dstPhys))
+    // srcPhys/dstPhys 是源/目标项自身的物理路径（op/storage.ts moveItems 逐项调用），
+    // 参数即目标项路径，不得再拼 name，否则指向 `<item>/<name>` 导致静默失败。
+    const srcPath = this.cleanPath(srcPhys)
+    const dstPath = this.cleanPath(dstPhys)
+    const dstParentPath = dstPath.substring(0, dstPath.lastIndexOf("/")) || "/"
+    const dstNode = this.resolveNodeByPath(dstParentPath)
     if (!dstNode || !dstNode.is_dir) {
       throw new Error("Destination folder not found")
     }
-
-    for (const name of names) {
-      const srcItemPath =
-        this.cleanPath(srcPhys) === "/"
-          ? `/${name}`
-          : `${this.cleanPath(srcPhys)}/${name}`
-      const srcNode = this.resolveNodeByPath(srcItemPath)
-      if (srcNode) {
-        await this.client.moveNode(srcNode.id, dstNode.id)
-      }
+    const srcNode = this.resolveNodeByPath(srcPath)
+    if (srcNode) {
+      await this.client.moveNode(srcNode.id, dstNode.id)
     }
   }
 
@@ -186,22 +232,19 @@ export class MegaDriver implements StorageDriver {
     physicalPath: string,
     names: string[],
   ): Promise<void> {
-    for (const name of names) {
-      const itemPath =
-        this.cleanPath(physicalPath) === "/"
-          ? `/${name}`
-          : `${this.cleanPath(physicalPath)}/${name}`
-      const node = this.resolveNodeByPath(itemPath)
-      if (node) {
-        await this.client.deleteNode(node.id)
-      }
+    // physicalPath 是目标项自身的物理路径（op/storage.ts removeItems 逐项调用），
+    // 参数即目标项路径，不得再拼 name，否则指向 `<item>/<name>`，resolveNodeByPath
+    // 返回 null 后被静默跳过，接口成功但节点仍在。
+    const node = this.resolveNodeByPath(this.cleanPath(physicalPath))
+    if (node) {
+      await this.client.deleteNode(node.id)
     }
   }
 
   async put(
     virtualPath: string,
     physicalPath: string,
-    content: Buffer | Uint8Array,
+    content: Uint8Array,
   ): Promise<void> {
     console.warn(`[Mega] put for ${physicalPath}`)
   }

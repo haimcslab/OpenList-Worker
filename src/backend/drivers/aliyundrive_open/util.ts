@@ -4,6 +4,7 @@ import {
   AliyunFileItem,
 } from "./types"
 import { assertSafeUrl } from "../../pkg/http"
+import { md5 } from "../../pkg/crypto"
 
 const ALI_OPEN_API = "https://openapi.aliyundrive.com/adrive/v1.0"
 
@@ -210,6 +211,25 @@ export class AliyunOpenClient {
     return this.addition.root_folder_id?.trim() || "root"
   }
 
+  /**
+   * Proof code for hash-based uploads: read an 8-byte window chosen from the
+   * MD5 of the access token, then base64-encode it.
+   */
+  public async getProofCode(
+    size: number,
+    readRange: (start: number, length: number) => Promise<Uint8Array>,
+  ): Promise<string> {
+    if (size <= 0) return ""
+    await this.ensureToken()
+    const digest = await md5(this.accessToken)
+    const seed = BigInt(`0x${digest.slice(0, 16)}`)
+    const start = Number(seed % BigInt(size))
+    const end = Math.min(start + 8, size)
+    if (end <= start) return ""
+    const bytes = await readRange(start, end - start)
+    return Buffer.from(bytes).toString("base64")
+  }
+
   public async openApiRequest<T = any>(
     path: string,
     body: any,
@@ -351,7 +371,7 @@ export class AliyunOpenClient {
   public async putFile(
     parentFileId: string,
     filename: string,
-    content: Buffer,
+    content: Uint8Array,
   ): Promise<void> {
     const size = content.length
     const createResp = await this.openApiRequest<any>("/openFile/create", {

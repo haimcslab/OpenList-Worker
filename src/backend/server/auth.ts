@@ -23,9 +23,10 @@ import {
 import {
   staticHash,
   saltedHash,
-  generateSalt,
   setUserPassword,
   isHex64,
+  passwordStampOf,
+  isPasswordStampValid,
 } from "../pkg/password"
 import { setCSRFToken, clearCSRFToken } from "../pkg/csrf"
 import { getAuditLogger } from "../pkg/audit"
@@ -42,7 +43,10 @@ const LOGIN_MAX_FAILURES = 5
 const LOGIN_MAX_FAILURES_GLOBAL = 20
 const LOGIN_LOCK_MS = 15 * 60 * 1000
 const LOGIN_MAX_LOCK_MS = 24 * 60 * 60 * 1000 // 最长锁定 24 小时
-const loginFailures = new Map<string, { count: number; lockedUntil: number; attempts: number }>()
+const loginFailures = new Map<
+  string,
+  { count: number; lockedUntil: number; attempts: number }
+>()
 
 function clientIpOf(c: Context): string {
   return (
@@ -78,11 +82,11 @@ function calculateLockDuration(attempts: number): number {
 async function bumpLoginFailure(
   key: string,
   maxFailures: number,
-  env: any
+  env: any,
 ): Promise<void> {
   const now = Date.now()
   let rec = loginFailures.get(key) || { count: 0, lockedUntil: 0, attempts: 0 }
-  
+
   // 尝试从 KV 读取（多实例共享）
   try {
     const { getKvBinding } = await import("../internal/model/db")
@@ -109,23 +113,23 @@ async function bumpLoginFailure(
   } catch {
     // KV 不可用，回退到内存模式
   }
-  
+
   if (rec.lockedUntil > now) return // already locked
-  
+
   rec.count += 1
   rec.attempts += 1
-  
+
   if (rec.count >= maxFailures) {
     const lockDuration = calculateLockDuration(rec.attempts)
     rec.lockedUntil = now + lockDuration
     rec.count = 0
     console.warn(
-      `[Auth] Login attempts exceeded for ${key}. Locked for ${Math.round(lockDuration / 60000)} minutes (attempt #${rec.attempts}).`
+      `[Auth] Login attempts exceeded for ${key}. Locked for ${Math.round(lockDuration / 60000)} minutes (attempt #${rec.attempts}).`,
     )
   }
-  
+
   loginFailures.set(key, rec)
-  
+
   // 持久化到 KV
   try {
     const { getKvBinding } = await import("../internal/model/db")
@@ -144,7 +148,11 @@ async function bumpLoginFailure(
   }
 }
 
-async function isLoginLocked(c: Context, username: string, env: any): Promise<boolean> {
+export async function isLoginLocked(
+  c: Context,
+  username: string,
+  env: any,
+): Promise<boolean> {
   // 懒清理：Map 过大时清掉已过锁定期/无锁定的条目，防止无限增长
   if (loginFailures.size > 10000) {
     const now = Date.now()
@@ -152,15 +160,15 @@ async function isLoginLocked(c: Context, username: string, env: any): Promise<bo
       if (v.lockedUntil < now && v.count === 0) loginFailures.delete(k)
     }
   }
-  
+
   const now = Date.now()
   const ipKey = loginKey(c, username)
   const globalKey = globalLoginKey(username)
-  
+
   // 检查内存缓存
   let rec = loginFailures.get(ipKey)
   let grec = loginFailures.get(globalKey)
-  
+
   // 尝试从 KV 读取（多实例共享）
   try {
     const { getKvBinding } = await import("../internal/model/db")
@@ -193,24 +201,36 @@ async function isLoginLocked(c: Context, username: string, env: any): Promise<bo
   } catch {
     // KV 不可用，使用内存数据
   }
-  
+
   if (rec && rec.lockedUntil > now) return true
   if (grec && grec.lockedUntil > now) return true
   return false
 }
 
-async function recordLoginFailure(c: Context, username: string, env: any): Promise<void> {
+export async function recordLoginFailure(
+  c: Context,
+  username: string,
+  env: any,
+): Promise<void> {
   await bumpLoginFailure(loginKey(c, username), LOGIN_MAX_FAILURES, env)
-  await bumpLoginFailure(globalLoginKey(username), LOGIN_MAX_FAILURES_GLOBAL, env)
+  await bumpLoginFailure(
+    globalLoginKey(username),
+    LOGIN_MAX_FAILURES_GLOBAL,
+    env,
+  )
 }
 
-async function clearLoginFailures(c: Context, username: string, env: any): Promise<void> {
+export async function clearLoginFailures(
+  c: Context,
+  username: string,
+  env: any,
+): Promise<void> {
   const ipKey = loginKey(c, username)
   const globalKey = globalLoginKey(username)
-  
+
   loginFailures.delete(ipKey)
   loginFailures.delete(globalKey)
-  
+
   // 从 KV 中删除
   try {
     const { getKvBinding } = await import("../internal/model/db")
@@ -230,29 +250,34 @@ async function clearLoginFailures(c: Context, username: string, env: any): Promi
 
 // OpenList/AList StaticHash —— 前端 /login/hash 提交的哈希算法。
 // 与新密码模块 pkg/password.staticHash 一致，保留旧名以兼容既有调用。
-export async function hashPasswordSHA256(plainPassword: string): Promise<string> {
+export async function hashPasswordSHA256(
+  plainPassword: string,
+): Promise<string> {
   return staticHash(plainPassword)
 }
 
 /**
  * 校验前端提交的静态哈希是否匹配该用户（等价 Go User.ValidatePwdStaticHash）。
- * 兼容的存储格式：
- *   - Go 双层（user.salt 存在）：password === saltedHash(inputStatic, salt)
- *   - 早期 TSWorker 单层（无 salt）：password === inputStatic
- *   - bcrypt 遗留：返回 false（无明文不可还原），仅明文 /login 可逃生
+ *
+ * 只接受 Go 双层格式：password === saltedHash(inputStatic, user.salt)。
+ *
+ * 历史遗留格式（bcrypt / 无 salt 的单层 SHA256）不再被支持，也不再在登录成功
+ * 后自动升级为双层格式 —— 与 Go 行为完全一致：没有 salt 的存储值一律不可验证。
+ * 遗留账号请通过 ADMIN_PASS 显式重置，或由管理员在后台改密。
  */
 export async function verifyUserStaticHash(
   user: any,
   inputStatic: string,
 ): Promise<boolean> {
-  const stored = String(user?.password || "").trim().toLowerCase()
-  const input = String(inputStatic || "").trim().toLowerCase()
-  if (!stored || !isHex64(input) || !isHex64(stored)) return false
-  if (user?.salt) {
-    const expect = (await saltedHash(input, String(user.salt))).toLowerCase()
-    return stored === expect
-  }
-  return stored === input
+  const stored = String(user?.password || "")
+    .trim()
+    .toLowerCase()
+  const input = String(inputStatic || "")
+    .trim()
+    .toLowerCase()
+  if (!stored || !user?.salt || !isHex64(input) || !isHex64(stored)) return false
+  const expect = (await saltedHash(input, String(user.salt))).toLowerCase()
+  return stored === expect
 }
 
 /**
@@ -307,7 +332,8 @@ export async function getOrInitUsers(envCtx: any) {
       role: 1,
       permission: 0,
       base_path: "/",
-      disabled: false,
+      // 与 defaultDb.users 保持一致：新装默认不启用访客（issue #133）。
+      disabled: true,
       sso_id: "",
       allow_ldap: false,
       pwd_update_at: new Date().toISOString(),
@@ -337,6 +363,8 @@ export async function getOrInitUsers(envCtx: any) {
       // 未初始化：仅创建 guest，admin 由 Web 安装向导（POST /api/public/init/setup）创建
       db.users = [guest]
     }
+    // 新装默认要求登录（issue #133）：由上面的「guest 默认禁用」实现，
+    // 与 Go 版一致 —— Go 没有 allow_guest 设置项，只有 guest 账号的启用状态。
     // 只有配置了 ADMIN_PASS（或已存在真实管理员）时，这份库才不是空壳，
     // 才应该落盘。未配置时应等待 init/setup 完成初始化，而不是抢先写入一个
     // 未初始化的占位库（会被 saveDb 的写前守卫拦截）。
@@ -403,7 +431,16 @@ export async function authUserFromReq(
     const user = db.users.find(
       (u: any) => u.id === payload.id || u.username === payload.username,
     )
-    if (!user) return null
+    // 禁用/已删除用户一律视为未认证。
+    //
+    // 安全不变量：身份解析必须复检「当前是否仍被允许」。JWT 只证明「签发时刻
+    // 身份合法」，不证明「现在仍然合法」。历史上这里缺少 disabled 判断，导致
+    // 管理员禁用某用户后，其既有令牌在 S3 网关等直接复用本函数的入口仍然可用
+    // （核心 API 走 getUserFromContext 有该检查，网关入口没有）。
+    if (!user || user.disabled) return null
+    // 密码指纹：改密后旧令牌立即失效（对齐 Go middlewares.Auth 的 PwdTS 比对）。
+    // 历史缺陷：JWT 只携带 {id, username, role}，改密不使既有令牌失效。
+    if (!isPasswordStampValid(payload, user)) return null
     return { db, user }
   } catch {
     return null
@@ -454,54 +491,53 @@ authRouter.post("/login", async (c) => {
     )
   }
 
-  const { users, db } = await getOrInitUsers(c.env)
+  const { users } = await getOrInitUsers(c.env)
 
   const matchedUser = users.find(
     (u: any) => u.username === username && !u.disabled,
   )
 
   if (matchedUser) {
-    // 明文登录：服务端先 StaticHash，再比对存储哈希（兼容单层/双层/bcrypt 遗留）
+    // 明文登录：服务端先 StaticHash，再比对存储哈希（仅 Go 双层格式）
     const isPasswordValid = await verifyUserPassword(matchedUser, rawPassword)
 
     if (isPasswordValid) {
-      // 遗留格式（bcrypt / 无盐单层 SHA256）登录成功后自动升级为 Go 双层哈希
-      const stored = String(matchedUser.password || "").trim()
-      const needsMigrate =
-        /^\$2[aby]\$/.test(stored) || (!matchedUser.salt && isHex64(stored))
-      if (needsMigrate) {
-        console.log(`[Auth] Upgrading password hash for user: ${username}`)
-        await setUserPassword(matchedUser, rawPassword)
-        await saveDb(db, c.env)
-      }
-
       const otpCheck = await checkUserOtp(matchedUser, body)
       if (!otpCheck.ok) {
+        // OTP 失败必须计入防爆破计数。
+        //
+        // 安全不变量：任何「口令学验证失败」都应当累加失败次数。历史缺陷是
+        // OTP 分支直接 return，不调用 recordLoginFailure —— 攻击者只要先拿到
+        // 正确密码，就能以「无限次猜测」的方式爆破 6 位 TOTP，而账号永远不会
+        // 被锁定（实测：连续 7 次错误 OTP 后仍可继续提交）。
+        await recordLoginFailure(c, username, c.env)
         return c.json(
           { code: otpCheck.code, message: otpCheck.message, data: null },
           otpCheck.httpStatus,
         )
       }
       await clearLoginFailures(c, username, c.env)
-      
+
       // 生成 JWT Token
       const payload = {
         id: matchedUser.id,
         username: matchedUser.username,
         role: matchedUser.role,
+        // 密码指纹（对齐 Go common.UserClaims.PwdTS）：改密后旧令牌立即失效
+        pwd_ts: passwordStampOf(matchedUser),
         exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
         jti: generateJti(),
       }
       const secret = await getJwtSecret(c)
       const token = await sign(payload, secret)
-      
+
       // 生成 CSRF Token
       const csrfToken = setCSRFToken(c)
-      
+
       // 记录审计日志
       const auditLogger = getAuditLogger()
       await auditLogger.logLoginSuccess(c, username)
-      
+
       return c.json({
         code: 200,
         message: "success",
@@ -513,7 +549,7 @@ authRouter.post("/login", async (c) => {
   // 登录失败 - 记录审计日志
   const auditLogger = getAuditLogger()
   await auditLogger.logLoginFailure(c, username, "Invalid credentials")
-  
+
   await recordLoginFailure(c, username, c.env)
   return c.json({ code: 401, message: "Invalid credentials", data: null }, 401)
 })
@@ -539,7 +575,7 @@ authRouter.post("/login/hash", async (c) => {
     )
   }
 
-  const { users, db } = await getOrInitUsers(c.env)
+  const { users } = await getOrInitUsers(c.env)
 
   const matchedUser = users.find(
     (u: any) => u.username === username && !u.disabled,
@@ -549,42 +585,42 @@ authRouter.post("/login/hash", async (c) => {
     const isHashValid = await verifyUserStaticHash(matchedUser, inputHash)
 
     if (isHashValid) {
-      // 无盐单层 SHA256 旧数据 -> 升级为 Go 双层哈希（无需明文）
-      if (!matchedUser.salt) {
-        console.log(`[Auth] Upgrading password hash for user: ${username}`)
-        matchedUser.salt = generateSalt()
-        matchedUser.password = await saltedHash(inputHash, matchedUser.salt)
-        matchedUser.pwd_update_at = new Date().toISOString()
-        await saveDb(db, c.env)
-      }
-
       const otpCheck = await checkUserOtp(matchedUser, body)
       if (!otpCheck.ok) {
+        // OTP 失败必须计入防爆破计数。
+        //
+        // 安全不变量：任何「口令学验证失败」都应当累加失败次数。历史缺陷是
+        // OTP 分支直接 return，不调用 recordLoginFailure —— 攻击者只要先拿到
+        // 正确密码，就能以「无限次猜测」的方式爆破 6 位 TOTP，而账号永远不会
+        // 被锁定（实测：连续 7 次错误 OTP 后仍可继续提交）。
+        await recordLoginFailure(c, username, c.env)
         return c.json(
           { code: otpCheck.code, message: otpCheck.message, data: null },
           otpCheck.httpStatus,
         )
       }
       await clearLoginFailures(c, username, c.env)
-      
+
       // 生成 JWT Token
       const payload = {
         id: matchedUser.id,
         username: matchedUser.username,
         role: matchedUser.role,
+        // 密码指纹（对齐 Go common.UserClaims.PwdTS）：改密后旧令牌立即失效
+        pwd_ts: passwordStampOf(matchedUser),
         exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7,
         jti: generateJti(),
       }
       const secret = await getJwtSecret(c)
       const token = await sign(payload, secret)
-      
+
       // 生成 CSRF Token
       const csrfToken = setCSRFToken(c)
-      
+
       // 记录审计日志
       const auditLogger = getAuditLogger()
       await auditLogger.logLoginSuccess(c, username)
-      
+
       return c.json({
         code: 200,
         message: "success",
@@ -596,7 +632,7 @@ authRouter.post("/login/hash", async (c) => {
   // 登录失败 - 记录审计日志
   const auditLogger = getAuditLogger()
   await auditLogger.logLoginFailure(c, username, "Invalid credentials")
-  
+
   await recordLoginFailure(c, username, c.env)
   return c.json({ code: 401, message: "Invalid credentials", data: null }, 401)
 })
@@ -683,14 +719,14 @@ export const logoutHandler = async (c: any) => {
       // token 无效则无需注销
     }
   }
-  
+
   // 清除 CSRF Token
   clearCSRFToken(c)
-  
+
   // 记录审计日志
   const auditLogger = getAuditLogger()
   await auditLogger.logLogout(c)
-  
+
   return c.json({
     code: 200,
     message: "success",
@@ -733,10 +769,11 @@ authRouter.post("/2fa/generate", async (c) => {
   }
   const secret = generateTotpSecret()
   const otpauth = buildOtpauthUrl(secret, user.username)
+  const qr = await buildQrImageUrl(otpauth)
   return c.json({
     code: 200,
     message: "success",
-    data: { qr: buildQrImageUrl(otpauth), secret },
+    data: { qr, secret },
   })
 })
 
