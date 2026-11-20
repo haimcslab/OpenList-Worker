@@ -8,6 +8,8 @@ on:
 
 jobs:
   sync:
+    # Upstream's Gitee mirror job. Only runs in OpenListTeam's repo.
+    if: github.repository == 'OpenListTeam/OpenList-Worker'
     runs-on: ubuntu-latest
     name: Sync Repository
     steps:
