@@ -1,7 +1,9 @@
 # Daily: merge OpenListTeam/OpenList-Worker main into a branch and open a PR.
 # Merging the PR deploys (Workers Builds). Our wrangler.jsonc and README.md win on conflict.
-# Needs secret SYNC_TOKEN: fine-grained PAT for this repo with Contents, Pull requests
-# and Workflows read/write (upstream changes .github/workflows, which GITHUB_TOKEN can't push).
+# Uses GITHUB_TOKEN. Optional secret SYNC_TOKEN (fine-grained PAT: Contents, Pull requests,
+# Workflows read/write) is used instead when set. Without it, a sync that touches
+# .github/workflows can't be pushed. Issues are off in this fork, so cases that need a
+# manual merge fail the job with an ::error:: annotation (shown in the failure email).
 name: upstream sync
 
 on:
@@ -18,16 +20,19 @@ jobs:
     if: github.repository == 'haimcslab/OpenList-Worker'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.SYNC_TOKEN }}
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Merge upstream
         id: merge
         env:
-          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
         run: |
           git config user.name "upstream-sync"
           git config user.email "builder@haimcslab.com"
@@ -50,13 +55,18 @@ jobs:
             left=$(git diff --name-only --diff-filter=U)
             if [ -n "$left" ]; then
               git merge --abort
-              body=$(printf 'Upstream has %s new commits but these files conflict:\n\n```\n%s\n```\n\nResolve with a manual merge PR (keep our wrangler.jsonc D1 config and README).' "$behind" "$left")
-              gh issue create --title "Upstream sync conflict ($(date -u +%F))" --body "$body"
-              exit 0
+              echo "::error::Upstream has $behind new commits that conflict in: $(echo $left). Merge manually in a PR (keep our wrangler.jsonc D1 config and README)."
+              exit 1
             fi
             git commit --no-edit
           fi
-          git push -u origin "$branch"
+          if ! git push -u origin "$branch"; then
+            if git diff --name-only origin/main HEAD | grep -q '^\.github/workflows/'; then
+              echo "::error::Upstream has $behind new commits that change .github/workflows, which GITHUB_TOKEN can't push. Merge upstream manually in a PR, or add a SYNC_TOKEN secret."
+              exit 1
+            fi
+            exit 1
+          fi
           log=$(git log --oneline --no-merges HEAD^1..upstream/main | head -60)
           gh pr create --base main --head "$branch" \
             --title "chore(sync): merge upstream main ($behind commits)" \
